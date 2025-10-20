@@ -42,7 +42,7 @@ public class DemoApplication {
 
     @Bean
     CommandLineRunner dmlRunner(
-            Environment env,
+            ObjectProvider<Environment> envProvider,
             DmlYamlLoader loader,
             ObjectProvider<DataSource> dataSourceProvider,
             ObjectProvider<DmlExecutorService> executorProvider,
@@ -55,6 +55,7 @@ public class DemoApplication {
             }
             DataSource defaultDs = dataSourceProvider.getIfAvailable();
             DmlExecutorService defaultExecutor = executorProvider.getIfAvailable();
+            Environment env = envProvider.getIfAvailable();
 
             // Determine a single YAML path exclusively from command line args
             String yamlPath = null;
@@ -100,8 +101,7 @@ public class DemoApplication {
             if (args != null) {
                 for (String a : args) {
                     if (a == null) continue;
-                    if (a.startsWith("--environment=")) cliEnv = a.substring("--environment=".length());
-                    else if (a.startsWith("--env=")) cliEnv = a.substring("--env=".length());
+                    if (a.startsWith("--env=")) cliEnv = a.substring("--env=".length());
                     else if (a.startsWith("--db.username=")) cliDBUser = a.substring("--db.username=".length());
                     else if (a.startsWith("--db.password=")) cliDBPass = a.substring("--db.password=".length());
                     else if (a.startsWith("--mode=")) mode = a.substring("--mode=".length()).trim().toLowerCase();
@@ -142,13 +142,13 @@ public class DemoApplication {
                     url = firstNonBlank(
                             prop(env, envTag != null ? "spring.datasource.oracle." + envTag + ".url" : null),
                             prop(env, envTag != null ? "spring.datasource." + envTag + ".url" : null),
-                            env.getProperty("spring.datasource.oracle.url"),
-                            env.getProperty("spring.datasource.url"));
+                            prop(env, "spring.datasource.oracle.url"),
+                            prop(env, "spring.datasource.url"));
                     driver = firstNonBlank(
                             prop(env, envTag != null ? "spring.datasource.oracle." + envTag + ".driver-class-name" : null),
                             prop(env, envTag != null ? "spring.datasource." + envTag + ".driver-class-name" : null),
-                            env.getProperty("spring.datasource.oracle.driver-class-name"),
-                            env.getProperty("spring.datasource.driver-class-name"),
+                            prop(env, "spring.datasource.oracle.driver-class-name"),
+                            prop(env, "spring.datasource.driver-class-name"),
                             "oracle.jdbc.OracleDriver");
                     username = cliDBUser;
                     password = cliDBPass;
@@ -156,13 +156,13 @@ public class DemoApplication {
                     url = firstNonBlank(
                             prop(env, envTag != null ? "spring.datasource.postgres." + envTag + ".url" : null),
                             prop(env, envTag != null ? "spring.datasource." + envTag + ".url" : null),
-                            env.getProperty("spring.datasource.postgres.url"),
-                            env.getProperty("spring.datasource.url"));
+                            prop(env, "spring.datasource.postgres.url"),
+                            prop(env, "spring.datasource.url"));
                     driver = firstNonBlank(
                             prop(env, envTag != null ? "spring.datasource.postgres." + envTag + ".driver-class-name" : null),
                             prop(env, envTag != null ? "spring.datasource." + envTag + ".driver-class-name" : null),
-                            env.getProperty("spring.datasource.postgres.driver-class-name"),
-                            env.getProperty("spring.datasource.driver-class-name"),
+                            prop(env, "spring.datasource.postgres.driver-class-name"),
+                            prop(env, "spring.datasource.driver-class-name"),
                             "org.postgresql.Driver");
                     username = cliDBUser;
                     password = cliDBPass;
@@ -347,7 +347,7 @@ public class DemoApplication {
     }
 
     private static String prop(Environment env, String key) {
-        if (key == null || key.isBlank()) return null;
+        if (env == null || key == null || key.isBlank()) return null;
         return env.getProperty(key);
     }
 
