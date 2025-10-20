@@ -63,6 +63,23 @@ public class DmlExecutorService {
     }
 
     /**
+     * Public entry for validation-only mode. Populates cfg.results with validation failures (if any)
+     * and returns without executing any statements.
+     */
+    public void validateOnly(QueriesConfig cfg) {
+        if (cfg == null) {
+            log.warn("No queries config provided; nothing to validate.");
+            return;
+        }
+        boolean ok = validateQueries(cfg);
+        if (ok) {
+            log.info("DML validation succeeded. All statements are syntactically valid.");
+        } else {
+            log.error("DML validation found errors. See results for details.");
+        }
+    }
+
+    /**
      * Validates SQL syntax by preparing each statement on the JDBC connection without executing it.
      * If any statement fails to prepare, this method populates cfg.results with failures and returns false.
      */

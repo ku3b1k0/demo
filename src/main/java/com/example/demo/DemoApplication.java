@@ -96,6 +96,7 @@ public class DemoApplication {
             String cliEnv = null; // e.g., dev, qa, prod
             String cliDBUser = null;
             String cliDBPass = null;
+            String mode = "execute"; // default behavior
             if (args != null) {
                 for (String a : args) {
                     if (a == null) continue;
@@ -103,10 +104,18 @@ public class DemoApplication {
                     else if (a.startsWith("--env=")) cliEnv = a.substring("--env=".length());
                     else if (a.startsWith("--db.username=")) cliDBUser = a.substring("--db.username=".length());
                     else if (a.startsWith("--db.password=")) cliDBPass = a.substring("--db.password=".length());
+                    else if (a.startsWith("--mode=")) mode = a.substring("--mode=".length()).trim().toLowerCase();
+                    else if (a.equalsIgnoreCase("--validateOnly") || a.equalsIgnoreCase("--validateonly")) mode = "validate";
                 }
             }
             if (cliEnv != null && !cliEnv.isBlank()) {
                 log.info("Environment parameter detected: {}", cliEnv);
+            }
+            if (!"execute".equals(mode) && !"validate".equals(mode)) {
+                log.warn("Unknown mode '{}'. Falling back to 'execute'. Supported: validate, execute.", mode);
+                mode = "execute";
+            } else {
+                log.info("DML mode: {}", mode);
             }
 
             String path = yamlPath;
@@ -141,16 +150,8 @@ public class DemoApplication {
                             env.getProperty("spring.datasource.oracle.driver-class-name"),
                             env.getProperty("spring.datasource.driver-class-name"),
                             "oracle.jdbc.OracleDriver");
-                    username = firstNonBlank(cliDBUser,
-                            prop(env, envTag != null ? "spring.datasource.oracle." + envTag + ".username" : null),
-                            prop(env, envTag != null ? "spring.datasource." + envTag + ".username" : null),
-                            env.getProperty("spring.datasource.oracle.username"),
-                            env.getProperty("spring.datasource.username"));
-                    password = firstNonBlank(cliDBPass,
-                            prop(env, envTag != null ? "spring.datasource.oracle." + envTag + ".password" : null),
-                            prop(env, envTag != null ? "spring.datasource." + envTag + ".password" : null),
-                            env.getProperty("spring.datasource.oracle.password"),
-                            env.getProperty("spring.datasource.password"));
+                    username = cliDBUser;
+                    password = cliDBPass;
                 } else { // postgres
                     url = firstNonBlank(
                             prop(env, envTag != null ? "spring.datasource.postgres." + envTag + ".url" : null),
@@ -163,16 +164,8 @@ public class DemoApplication {
                             env.getProperty("spring.datasource.postgres.driver-class-name"),
                             env.getProperty("spring.datasource.driver-class-name"),
                             "org.postgresql.Driver");
-                    username = firstNonBlank(cliDBUser,
-                            prop(env, envTag != null ? "spring.datasource.postgres." + envTag + ".username" : null),
-                            prop(env, envTag != null ? "spring.datasource." + envTag + ".username" : null),
-                            env.getProperty("spring.datasource.postgres.username"),
-                            env.getProperty("spring.datasource.username"));
-                    password = firstNonBlank(cliDBPass,
-                            prop(env, envTag != null ? "spring.datasource.postgres." + envTag + ".password" : null),
-                            prop(env, envTag != null ? "spring.datasource." + envTag + ".password" : null),
-                            env.getProperty("spring.datasource.postgres.password"),
-                            env.getProperty("spring.datasource.password"));
+                    username = cliDBUser;
+                    password = cliDBPass;
                 }
 
                 if (url == null || url.isBlank()) {
@@ -201,8 +194,13 @@ public class DemoApplication {
                 execForFile = defaultExecutor;
             }
 
-            execForFile.execute(cfg);
-            log.info("DML execution finished for {}.", path);
+            if ("validate".equals(mode)) {
+                execForFile.validateOnly(cfg);
+                log.info("DML validation finished for {}.", path);
+            } else {
+                execForFile.execute(cfg);
+                log.info("DML execution finished for {}.", path);
+            }
 
             // Output results in simple summary and CSV format to console
             try {
