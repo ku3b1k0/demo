@@ -18,10 +18,9 @@ import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.transaction.PlatformTransactionManager;
 
-import javax.sql.DataSource;
 import java.util.List;
 
-@SpringBootApplication
+@SpringBootApplication(exclude = {org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration.class})
 public class DemoApplication {
     private static final Logger log = LoggerFactory.getLogger(DemoApplication.class);
 
@@ -44,17 +43,27 @@ public class DemoApplication {
     CommandLineRunner dmlRunner(
             ObjectProvider<Environment> envProvider,
             DmlYamlLoader loader,
-            ObjectProvider<DataSource> dataSourceProvider,
-            ObjectProvider<DmlExecutorService> executorProvider,
             @Value("${dml.enabled:false}") boolean enabled
     ) {
         return args -> {
+            // Print all command-line arguments right at startup
+            if (args == null || args.length == 0) {
+                log.info("CLI args: <none>");
+            } else {
+                for (int i = 0; i < args.length; i++) {
+                    String a = args[i];
+                    log.info("CLI arg[{}]: {}", i, a);
+                }
+                try {
+                    log.info("CLI args (single line): {}", String.join(" ", args));
+                } catch (Exception ignore) {
+                    // Fallback: individual args are already printed above
+                }
+            }
             if (!enabled) {
                 log.info("DML runner disabled (set dml.enabled=true to enable).");
                 return;
             }
-            DataSource defaultDs = dataSourceProvider.getIfAvailable();
-            DmlExecutorService defaultExecutor = executorProvider.getIfAvailable();
             Environment env = envProvider.getIfAvailable();
 
             // Determine a single YAML path exclusively from command line args
@@ -145,10 +154,7 @@ public class DemoApplication {
                             prop(env, "spring.datasource.oracle.url"),
                             prop(env, "spring.datasource.url"));
                     driver = firstNonBlank(
-                            prop(env, envTag != null ? "spring.datasource.oracle." + envTag + ".driver-class-name" : null),
-                            prop(env, envTag != null ? "spring.datasource." + envTag + ".driver-class-name" : null),
                             prop(env, "spring.datasource.oracle.driver-class-name"),
-                            prop(env, "spring.datasource.driver-class-name"),
                             "oracle.jdbc.OracleDriver");
                     username = cliDBUser;
                     password = cliDBPass;
@@ -185,13 +191,11 @@ public class DemoApplication {
 
             if (execForFile == null) {
                 if (vendor == null) {
-                    log.info("No vendor detected from path '{}'. Using default DataSource if available.", path);
+                    log.warn("No vendor detected from path '{}'; skipping {}.", path, path);
+                } else {
+                    log.warn("Unable to create executor for vendor '{}'; skipping {}.", vendor, path);
                 }
-                if (defaultExecutor == null) {
-                    log.warn("No default executor available; skipping {}.", path);
-                    return;
-                }
-                execForFile = defaultExecutor;
+                return;
             }
 
             if ("validate".equals(mode)) {
@@ -276,11 +280,39 @@ public class DemoApplication {
                 }
             }
         }
+        // Fallbacks when there are no results to display
+        if (sb.length() == 0) {
+            if (cfg == null) {
+                return "No configuration loaded.";
+            }
+            // Try to summarize what we know from the input queries
+            QueriesConfig.Queries q = cfg.getQueries();
+            if (q != null) {
+                int groupCount = q.getGroups() != null ? q.getGroups().size() : 0;
+                int txCount = 0;
+                if (q.getTransactional() != null) {
+                    for (List<String> b : q.getTransactional()) if (b != null) txCount += b.size();
+                }
+                int nonTxCount = q.getNonTransactional() != null ? q.getNonTransactional().size() : 0;
+                sb.append("No execution results available.\n");
+                if (groupCount > 0) {
+                    sb.append("Configured groups: ").append(groupCount).append('\n');
+                }
+                if (txCount > 0 || nonTxCount > 0) {
+                    sb.append("Configured statements -> transactional:").append(txCount)
+                      .append(", non-transactional:").append(nonTxCount).append('\n');
+                }
+                sb.append("This typically means you ran in validate-only mode with no errors, or execution was skipped.");
+            } else {
+                sb.append("No execution results available.");
+            }
+        }
         return sb.toString();
     }
 
     private String buildCsv(QueriesConfig cfg) {
         StringBuilder sb = new StringBuilder();
+        boolean wroteAny = false;
         if (cfg != null && cfg.getResults() != null && cfg.getResults().getNamed() != null && !cfg.getResults().getNamed().isEmpty()) {
             sb.append("scope,name,type,number,sql,success,error\n");
             for (QueriesConfig.GroupResult g : cfg.getResults().getNamed()) {
@@ -296,6 +328,7 @@ public class DemoApplication {
                           .append(o.isSuccess()).append(',')
                           .append(csvEscape(o.getError()))
                           .append('\n');
+                        wroteAny = true;
                     }
                 }
             }
@@ -313,6 +346,7 @@ public class DemoApplication {
                       .append(',')
                       .append(csvEscape(r != null ? r.getError() : null))
                       .append('\n');
+                    wroteAny = true;
                 }
             }
             List<QueriesConfig.StatementResult> nonTx = cfg.getResults().getNonTransactional();
@@ -325,7 +359,24 @@ public class DemoApplication {
                       .append(',')
                       .append(csvEscape(r != null ? r.getError() : null))
                       .append('\n');
+                    wroteAny = true;
                 }
+            }
+        }
+        if (!wroteAny) {
+            // Provide a friendly note row so callers don't see an empty CSV body
+            sb.append("info,message\n");
+            sb.append("note,No execution results available (validate-only success or execution skipped)\n");
+            // Optionally include counts from the config
+            if (cfg != null && cfg.getQueries() != null) {
+                QueriesConfig.Queries q = cfg.getQueries();
+                int groupCount = q.getGroups() != null ? q.getGroups().size() : 0;
+                int txStmts = 0;
+                if (q.getTransactional() != null) {
+                    for (List<String> b : q.getTransactional()) if (b != null) txStmts += b.size();
+                }
+                int nonTxStmts = q.getNonTransactional() != null ? q.getNonTransactional().size() : 0;
+                sb.append("note,Configured groups=" + groupCount + "; transactional statements=" + txStmts + "; non-transactional statements=" + nonTxStmts + "\n");
             }
         }
         return sb.toString();

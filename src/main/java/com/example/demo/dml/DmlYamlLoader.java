@@ -99,7 +99,7 @@ public class DmlYamlLoader {
             String t = type != null ? type.toLowerCase(Locale.ROOT).replace('_', '-') : "";
             if ("transactional".equals(t)) {
                 transactional.add(statements);
-            } else if ("non-transactional".equals(t) || "nontransactional".equals(t) || "nontransactional".equals(t)) {
+            } else if ("non-transactional".equals(t) || "nontransactional".equals(t) || "non_transactional".equals(t)) {
                 nonTransactional.addAll(statements);
             } else {
                 // Default to non-transactional if type unknown
