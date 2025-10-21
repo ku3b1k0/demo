@@ -1,4 +1,4 @@
-package com.example.demo.dml;
+package com.mastercard.dgc.bizops.dml;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -214,6 +214,7 @@ public class QueriesConfig {
         private String sql;
         private boolean success;
         private String error;
+        private Integer rowsUpdated; // nullable; set for DML successes
 
         public StatementOutcome() {}
         public StatementOutcome(String sql, boolean success, String error) {
@@ -221,11 +222,19 @@ public class QueriesConfig {
             this.success = success;
             this.error = error;
         }
+        public StatementOutcome(String sql, boolean success, String error, Integer rowsUpdated) {
+            this.sql = sql;
+            this.success = success;
+            this.error = error;
+            this.rowsUpdated = rowsUpdated;
+        }
         public String getSql() { return sql; }
         public void setSql(String sql) { this.sql = sql; }
         public boolean isSuccess() { return success; }
         public void setSuccess(boolean success) { this.success = success; }
         public String getError() { return error; }
         public void setError(String error) { this.error = error; }
+        public Integer getRowsUpdated() { return rowsUpdated; }
+        public void setRowsUpdated(Integer rowsUpdated) { this.rowsUpdated = rowsUpdated; }
     }
 }

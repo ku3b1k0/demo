@@ -1,4 +1,4 @@
-package com.example.demo.dml;
+package com.mastercard.dgc.bizops.dml;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -15,7 +15,7 @@ import java.util.Map;
 
 /**
  * Loads DML queries from a YAML resource.
- * Supports both the legacy structure and the new structure described in the issue.
+ * Supports only the new structure (queries: [ { name, type, queries: [...] }, ... ]).
  */
 public class DmlYamlLoader {
     private static final Logger log = LoggerFactory.getLogger(DmlYamlLoader.class);
@@ -32,28 +32,46 @@ public class DmlYamlLoader {
             String resolved = resolveLocation(location);
             Resource resource = resourceLoader.getResource(resolved);
             if (!resource.exists()) {
-                log.warn("DML YAML resource not found at {}", resolved);
-                return new QueriesConfig();
+                // Attempt to resolve common pitfalls: extension mismatch (.yml vs .yaml) and missing prefix
+                String alt = null;
+                if (location != null) {
+                    if (location.endsWith(".yml")) alt = location.substring(0, location.length() - 4) + ".yaml";
+                    else if (location.endsWith(".yaml")) alt = location.substring(0, location.length() - 5) + ".yml";
+                }
+                // Try filesystem with alternate extension if original not found
+                if (location != null && !location.contains(":")) {
+                    File fOrig = new File(location);
+                    if (!fOrig.exists() && alt != null) {
+                        File fAlt = new File(alt);
+                        if (fAlt.exists()) {
+                            resolved = "file:" + fAlt.getAbsolutePath();
+                            resource = resourceLoader.getResource(resolved);
+                        }
+                    }
+                }
+                if (!resource.exists()) {
+                    log.warn("DML YAML resource not found at {}{}", resolved, (alt != null ? " (also tried alt extension)" : ""));
+                    return new QueriesConfig();
+                } else {
+                    log.info("Resolved DML YAML resource to {}", resolved);
+                }
             }
             try (InputStream in = resource.getInputStream()) {
                 Yaml yaml = new Yaml();
                 Object root = yaml.load(in);
                 if (root == null) return new QueriesConfig();
 
-                // If already in legacy shape and can be bound directly
+                // Expecting new structure root: { queries: [ { name, type, queries: [...] }, ... ] }
                 if (root instanceof Map) {
                     Map<String, Object> map = (Map<String, Object>) root;
                     Object queriesNode = map.get("queries");
                     if (queriesNode instanceof List) {
-                        // New structure: queries: [ { name, type, queries: [...] }, ... ]
+                        // New structure
                         return fromNewStructure((List<Object>) queriesNode);
-                    } else if (queriesNode instanceof Map) {
-                        // Legacy structure: queries.transactional / queries.nonTransactional
-                        return fromLegacyStructure((Map<String, Object>) queriesNode);
                     } else {
-                        // Try legacy direct bind as a fallback
+                        // Unsupported shape for 'queries' when not a list; attempt POJO bind as fallback
+                        log.warn("Unsupported 'queries' node structure; expected a list. Falling back to POJO bind.");
                         try {
-                            // Re-load as QueriesConfig using YAML to POJO mapping
                             String resolved2 = resolveLocation(location);
                             Resource res2 = resourceLoader.getResource(resolved2);
                             try (InputStream in2 = res2.getInputStream()) {
@@ -120,26 +138,6 @@ public class DmlYamlLoader {
         return cfg;
     }
 
-    @SuppressWarnings("unchecked")
-    private QueriesConfig fromLegacyStructure(Map<String, Object> queriesNode) {
-        QueriesConfig cfg = new QueriesConfig();
-        Object tx = queriesNode.get("transactional");
-        Object nontx = queriesNode.get("nonTransactional");
-        List<List<String>> transactional = new ArrayList<>();
-        List<String> nonTransactional = new ArrayList<>();
-
-        if (tx instanceof List) {
-            for (Object batch : (List<Object>) tx) {
-                transactional.add(toStringList(batch));
-            }
-        }
-        if (nontx instanceof List) {
-            nonTransactional.addAll(toStringList(nontx));
-        }
-        cfg.getQueries().setTransactional(transactional);
-        cfg.getQueries().setNonTransactional(nonTransactional);
-        return cfg;
-    }
 
     @SuppressWarnings("unchecked")
     private List<String> toStringList(Object node) {

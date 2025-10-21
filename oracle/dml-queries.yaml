@@ -7,19 +7,19 @@ queries:
   - name: schema_setup
     type: non-transactional
     queries:
-      - "CREATE TABLE departments (dept_id NUMBER PRIMARY KEY, dept_name VARCHAR2(50));"
-      - "CREATE TABLE employees (emp_id NUMBER PRIMARY KEY, emp_name VARCHAR2(50), dept_id NUMBER REFERENCES departments(dept_id));"
+      - "INSERT INTO hr.countries VALUES ('IE', 'Ireland', 1)"
+      - "INSERT INTO hr.countries VALUES ('NO', 'Norway', 1)"
 
   - name: seed_data
     type: transactional
     queries:
-      - "INSERT INTO departments VALUES (1, 'HR');"
-      - "INSERT INTO departments VALUES (2, 'IT');"
-      - "INSERT INTO employees VALUES (101, 'Alice', 1);"
-      - "INSERT INTO employees VALUES (102, 'Bob', 2);"
+      - "INSERT INTO hr.countries VALUES ('CR', 'Costa Rica', 2)"
+      - "INSERT INTO hr.countries VALUES ('GT', 'Guatemala', 2)"
+      - "INSERT INTO hr.countries VALUES ('PE', 'Peru', 2)"
+      - "INSERT INTO hr.countries VALUES ('VE', 'Venezuela', 2)"
 
   - name: maintenance
     type: non-transactional
     queries:
-      - "CREATE INDEX idx_emp_name ON employees(emp_name);"
-      - "ANALYZE TABLE employees COMPUTE STATISTICS;"
+      - "INSERT INTO hr.countries VALUES ('ID', 'Indonesia', 3)"
+      - "INSERT INTO hr.countries VALUES ('PH', 'Philippines', 3)"

@@ -1,4 +1,4 @@
-package com.example.demo.dml;
+package com.mastercard.dgc.bizops.dml;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -8,7 +8,6 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionCallbackWithoutResult;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.ArrayList;
@@ -39,14 +38,17 @@ public class DmlExecutorService {
             return;
         }
 
-        // 1) Validate all queries before execution. If validation fails, do not execute anything.
-        if (!validateQueries(cfg)) {
-            log.error("DML validation failed. Skipping execution of all queries.");
-            return;
-        }
+        // List planned queries and proceed to execution
+        logPlannedQueries(cfg, "execution");
 
         if (cfg.getResults() == null) {
             cfg.setResults(new QueriesConfig.Results());
+        }
+
+        // Pre-execution check: allow only INSERT, UPDATE, DELETE
+        if (!precheckOnlyDml(cfg)) {
+            log.error("Aborting execution: Found statements that are not INSERT/UPDATE/DELETE.");
+            return;
         }
 
         // Prefer executing using named groups if available
@@ -71,6 +73,7 @@ public class DmlExecutorService {
             log.warn("No queries config provided; nothing to validate.");
             return;
         }
+        logPlannedQueries(cfg, "validation");
         boolean ok = validateQueries(cfg);
         if (ok) {
             log.info("DML validation succeeded. All statements are syntactically valid.");
@@ -93,6 +96,46 @@ public class DmlExecutorService {
         List<QueriesConfig.BatchResult> txResultsOnError = new ArrayList<>();
         List<QueriesConfig.StatementResult> nonTxResultsOnError = new ArrayList<>();
 
+        // Step 1: lightweight static sanity checks to catch obvious typos before hitting JDBC
+        boolean staticError = false;
+        if (transactional != null) {
+            for (int b = 0; b < transactional.size(); b++) {
+                List<String> batch = transactional.get(b);
+                if (batch == null || batch.isEmpty()) continue;
+                String firstErr = null;
+                for (int i = 0; i < batch.size(); i++) {
+                    String sql = batch.get(i);
+                    if (sql == null || sql.isBlank()) continue;
+                    String err = staticSyntaxError(sql);
+                    if (err != null) {
+                        if (firstErr == null) firstErr = String.format("Syntax error in tx batch #%d stmt #%d: %s", b + 1, i + 1, err);
+                    }
+                }
+                if (firstErr != null) {
+                    txResultsOnError.add(new QueriesConfig.BatchResult(b + 1, false, firstErr));
+                    staticError = true;
+                }
+            }
+        }
+        if (nonTransactional != null) {
+            for (int i = 0; i < nonTransactional.size(); i++) {
+                String sql = nonTransactional.get(i);
+                if (sql == null || sql.isBlank()) continue;
+                String err = staticSyntaxError(sql);
+                if (err != null) {
+                    nonTxResultsOnError.add(new QueriesConfig.StatementResult(i + 1, false, err));
+                    staticError = true;
+                }
+            }
+        }
+        if (staticError) {
+            if (cfg.getResults() == null) cfg.setResults(new QueriesConfig.Results());
+            if (!nonTxResultsOnError.isEmpty()) cfg.getResults().setNonTransactional(nonTxResultsOnError);
+            if (!txResultsOnError.isEmpty()) cfg.getResults().setTransactional(txResultsOnError);
+            return false;
+        }
+
+        // Step 2: JDBC prepare-based validation for deeper checks
         Boolean hasError = jdbcTemplate.execute((ConnectionCallback<Boolean>) con -> {
             boolean anyError = false;
             // Validate transactional batches: if any statement in a batch is invalid, mark the batch as failed
@@ -153,6 +196,178 @@ public class DmlExecutorService {
         return true;
     }
 
+    // Very lightweight static validator to catch obvious keyword typos before JDBC-level checks
+    private String staticSyntaxError(String sql) {
+        if (sql == null) return null;
+        String s = sql.trim();
+        if (s.isEmpty()) return null;
+        String lower = s.toLowerCase();
+        // Remove trailing semicolon for analysis
+        if (lower.endsWith(";")) lower = lower.substring(0, lower.length() - 1).trim();
+        // Catch 'creat' instead of 'create'
+        if (lower.matches("^creat(\\b|\\s|\\().*")) {
+            return "Unknown keyword 'CREAT' at start of statement. Did you mean 'CREATE'?";
+        }
+        return null;
+    }
+
+    private void logPlannedQueries(QueriesConfig cfg, String phase) {
+        if (cfg == null || cfg.getQueries() == null) {
+            log.info("No queries to list for {}.", phase);
+            return;
+        }
+        QueriesConfig.Queries q = cfg.getQueries();
+        List<QueriesConfig.Group> groups = q.getGroups();
+        log.info("--------------------");
+        log.info("Listing queries for {}...", phase);
+        if (groups != null && !groups.isEmpty()) {
+            for (QueriesConfig.Group g : groups) {
+                if (g == null) continue;
+                List<String> stmts = g.getQueries();
+                String type = g.getType();
+                int count = stmts != null ? stmts.size() : 0;
+                log.info("Group: {} [{}] ({} statements)", g.getName(), type, count);
+                if (stmts != null) {
+                    for (int i = 0; i < stmts.size(); i++) {
+                        String sql = stmts.get(i);
+                        if (sql == null || sql.isBlank()) continue;
+                        log.info("  {}. {}", i + 1, trimSql(sql));
+                    }
+                }
+            }
+        } else {
+            // Legacy shape
+            List<List<String>> tx = q.getTransactional();
+            List<String> nonTx = q.getNonTransactional();
+            if (tx != null && !tx.isEmpty()) {
+                log.info("Transactional batches: {}", tx.size());
+                for (int b = 0; b < tx.size(); b++) {
+                    List<String> batch = tx.get(b);
+                    int count = batch != null ? batch.size() : 0;
+                    log.info("  Batch #{} ({} statements)", b + 1, count);
+                    if (batch != null) {
+                        for (int i = 0; i < batch.size(); i++) {
+                            String sql = batch.get(i);
+                            if (sql == null || sql.isBlank()) continue;
+                            log.info("    {}. {}", i + 1, trimSql(sql));
+                        }
+                    }
+                }
+            }
+            if (nonTx != null && !nonTx.isEmpty()) {
+                log.info("Non-transactional statements: {}", nonTx.size());
+                for (int i = 0; i < nonTx.size(); i++) {
+                    String sql = nonTx.get(i);
+                    if (sql == null || sql.isBlank()) continue;
+                    log.info("  {}. {}", i + 1, trimSql(sql));
+                }
+            }
+        }
+        log.info("--------------------");
+    }
+
+    private boolean precheckOnlyDml(QueriesConfig cfg) {
+        if (cfg == null || cfg.getQueries() == null) return true;
+        boolean anyOffending = false;
+        QueriesConfig.Queries q = cfg.getQueries();
+
+        // Prepare results container
+        if (cfg.getResults() == null) cfg.setResults(new QueriesConfig.Results());
+
+        // If groups exist, report per group
+        if (q.getGroups() != null && !q.getGroups().isEmpty()) {
+            List<QueriesConfig.GroupResult> named = new ArrayList<>();
+            for (QueriesConfig.Group g : q.getGroups()) {
+                if (g == null) continue;
+                List<String> stmts = g.getQueries();
+                if (stmts == null || stmts.isEmpty()) continue;
+                List<QueriesConfig.StatementOutcome> bad = new ArrayList<>();
+                for (String sql : stmts) {
+                    if (sql == null || sql.isBlank()) continue;
+                    if (!isAllowedDml(sql)) {
+                        anyOffending = true;
+                        bad.add(new QueriesConfig.StatementOutcome(sql, false, "Only INSERT, UPDATE or DELETE statements are allowed"));
+                        log.error("Disallowed statement in group '{}': {}", g.getName(), trimSql(sql));
+                    }
+                }
+                if (!bad.isEmpty()) {
+                    QueriesConfig.GroupResult gr = new QueriesConfig.GroupResult(g.getName(), g.getType());
+                    gr.setTotal(stmts.size());
+                    gr.setSuccessCount(0);
+                    gr.setFailureCount(bad.size());
+                    gr.setOutcomes(bad);
+                    named.add(gr);
+                }
+            }
+            if (!named.isEmpty()) {
+                cfg.getResults().setNamed(named);
+            }
+        } else {
+            // Legacy lists: transactional and non-transactional
+            List<QueriesConfig.BatchResult> tx = new ArrayList<>();
+            List<QueriesConfig.StatementResult> nonTx = new ArrayList<>();
+            List<List<String>> batches = q.getTransactional();
+            if (batches != null) {
+                for (int b = 0; b < batches.size(); b++) {
+                    List<String> batch = batches.get(b);
+                    if (batch == null || batch.isEmpty()) continue;
+                    boolean badBatch = false;
+                    for (String sql : batch) {
+                        if (sql == null || sql.isBlank()) continue;
+                        if (!isAllowedDml(sql)) { badBatch = true; break; }
+                    }
+                    if (badBatch) {
+                        anyOffending = true;
+                        tx.add(new QueriesConfig.BatchResult(b + 1, false, "Only INSERT, UPDATE or DELETE statements are allowed (batch contains disallowed statement)"));
+                    }
+                }
+            }
+            List<String> nonTransactional = q.getNonTransactional();
+            if (nonTransactional != null) {
+                for (int i = 0; i < nonTransactional.size(); i++) {
+                    String sql = nonTransactional.get(i);
+                    if (sql == null || sql.isBlank()) continue;
+                    if (!isAllowedDml(sql)) {
+                        anyOffending = true;
+                        nonTx.add(new QueriesConfig.StatementResult(i + 1, false, "Only INSERT, UPDATE or DELETE statements are allowed"));
+                        log.error("Disallowed statement (non-tx #{}): {}", i + 1, trimSql(sql));
+                    }
+                }
+            }
+            if (!tx.isEmpty()) cfg.getResults().setTransactional(tx);
+            if (!nonTx.isEmpty()) cfg.getResults().setNonTransactional(nonTx);
+        }
+        return !anyOffending;
+    }
+
+    private boolean isAllowedDml(String sql) {
+        if (sql == null) return false;
+        String s = sql;
+        s = s.replace('\r', '\n');
+        String t = s.trim();
+        // Strip leading line comments and block comments (shallow)
+        boolean stripped = true;
+        int guard = 0;
+        while (stripped && guard++ < 3) { // avoid infinite loop
+            stripped = false;
+            if (t.startsWith("--")) {
+                int nl = t.indexOf('\n');
+                if (nl >= 0) { t = t.substring(nl + 1).trim(); stripped = true; continue; }
+            }
+            if (t.startsWith("/*")) {
+                int end = t.indexOf("*/");
+                if (end >= 0) { t = t.substring(end + 2).trim(); stripped = true; }
+            }
+        }
+        if (t.isEmpty()) return false;
+        String lower = t.toLowerCase();
+        // remove leading parentheses if any
+        while (lower.startsWith("(")) {
+            lower = lower.substring(1).trim();
+        }
+        return lower.startsWith("insert") || lower.startsWith("update") || lower.startsWith("delete");
+    }
+
     private void executeByGroups(QueriesConfig cfg) {
         List<QueriesConfig.Group> groups = cfg.getQueries().getGroups();
         List<QueriesConfig.GroupResult> namedResults = new ArrayList<>();
@@ -185,7 +400,9 @@ public class DmlExecutorService {
                                 try {
                                     int updated = jdbcTemplate.update(sql);
                                     log.info("[group:{} tx stmt #{}] OK (updated={}): {}", g.getName(), i + 1, updated, trimSql(sql));
-                                    outcomes.add(new QueriesConfig.StatementOutcome(sql, true, null));
+                                    QueriesConfig.StatementOutcome so = new QueriesConfig.StatementOutcome(sql, true, null);
+                                    so.setRowsUpdated(updated);
+                                    outcomes.add(so);
                                 } catch (Exception e) {
                                     log.error("[group:{} tx stmt #{}] FAILED: {} -> {}", g.getName(), i + 1, trimSql(sql), e.getMessage(), e);
                                     outcomes.add(new QueriesConfig.StatementOutcome(sql, false, e.getMessage()));
@@ -203,16 +420,25 @@ public class DmlExecutorService {
                 } catch (Exception e) {
                     execEx = e;
                     int failIdx = failIndexHolder[0];
-                    // Mark remaining statements as skipped due to rollback
+                    // Convert all previously marked successes to failed because the transaction was rolled back
+                    String rolledBackMsg = "Rolled back due to transaction failure at statement #" + (failIdx + 1);
+                    for (int i = 0; i < outcomes.size(); i++) {
+                        QueriesConfig.StatementOutcome o = outcomes.get(i);
+                        if (o != null && o.isSuccess()) {
+                            o.setSuccess(false);
+                            o.setError(rolledBackMsg);
+                            o.setRowsUpdated(null);
+                        }
+                    }
+                    // Mark remaining statements (not attempted) as failed due to rollback
                     for (int i = failIdx + 1; i < stmts.size(); i++) {
                         String sql = stmts.get(i);
                         if (sql == null || sql.isBlank()) continue;
-                        outcomes.add(new QueriesConfig.StatementOutcome(sql, false, "Skipped due to rollback"));
+                        outcomes.add(new QueriesConfig.StatementOutcome(sql, false, rolledBackMsg + " (not executed)"));
                     }
-                    int failures = 0;
-                    for (QueriesConfig.StatementOutcome o : outcomes) if (!o.isSuccess()) failures++;
-                    gr.setSuccessCount(outcomes.size() - failures);
-                    gr.setFailureCount(failures);
+                    // After rollback, the whole group failed
+                    gr.setSuccessCount(0);
+                    gr.setFailureCount(outcomes.size());
                     String errMsg = execEx != null ? execEx.getMessage() : "Transaction failed";
                     txResults.add(new QueriesConfig.BatchResult(batchNo, false, errMsg));
                     log.error("[group:{}] TRANSACTION ROLLED BACK: {}", g.getName(), errMsg);
@@ -225,18 +451,21 @@ public class DmlExecutorService {
                     nonTxStmtCounter++;
                     final int idx = nonTxStmtCounter;
                     try {
+                        final int[] updatedHolder = new int[] { 0 };
                         jdbcTemplate.execute((ConnectionCallback<Void>) con -> {
                             boolean originalAutoCommit = con.getAutoCommit();
                             try {
                                 if (!originalAutoCommit) con.setAutoCommit(true);
-                                jdbcTemplate.update(sql);
+                                updatedHolder[0] = jdbcTemplate.update(sql);
                                 return null;
                             } finally {
                                 try { con.setAutoCommit(originalAutoCommit); } catch (SQLException ignored) {}
                             }
                         });
-                        log.info("[group:{} non-tx #{}] OK: {}", g.getName(), i + 1, trimSql(sql));
-                        outcomes.add(new QueriesConfig.StatementOutcome(sql, true, null));
+                        log.info("[group:{} non-tx #{}] OK (updated={}): {}", g.getName(), i + 1, updatedHolder[0], trimSql(sql));
+                        QueriesConfig.StatementOutcome so = new QueriesConfig.StatementOutcome(sql, true, null);
+                        so.setRowsUpdated(updatedHolder[0]);
+                        outcomes.add(so);
                         nonTxResults.add(new QueriesConfig.StatementResult(idx, true, null));
                     } catch (Exception e) {
                         log.error("[group:{} non-tx #{}] FAILED: {} -> {}", g.getName(), i + 1, trimSql(sql), e.getMessage(), e);
