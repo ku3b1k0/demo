@@ -67,7 +67,19 @@ public class DmlYamlLoader {
                     Object queriesNode = map.get("queries");
                     if (queriesNode instanceof List) {
                         // New structure
-                        return fromNewStructure((List<Object>) queriesNode);
+                        QueriesConfig cfg = fromNewStructure((List<Object>) queriesNode);
+                        // Load optional metadata if present
+                        Object metaNode = map.get("metadata");
+                        if (metaNode instanceof Map) {
+                            Map<String, Object> mm = (Map<String, Object>) metaNode;
+                            QueriesConfig.Metadata md = new QueriesConfig.Metadata();
+                            Object author = mm.get("author");
+                            Object createdOn = mm.get("createdOn");
+                            if (author != null) md.setAuthor(String.valueOf(author));
+                            if (createdOn != null) md.setCreatedOn(String.valueOf(createdOn));
+                            cfg.setMetadata(md);
+                        }
+                        return cfg;
                     } else {
                         // Unsupported shape for 'queries' when not a list; attempt POJO bind as fallback
                         log.warn("Unsupported 'queries' node structure; expected a list. Falling back to POJO bind.");

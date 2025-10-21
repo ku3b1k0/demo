@@ -286,7 +286,7 @@ public class DmlExecutorService {
                     if (sql == null || sql.isBlank()) continue;
                     if (!isAllowedDml(sql)) {
                         anyOffending = true;
-                        bad.add(new QueriesConfig.StatementOutcome(sql, false, "Only INSERT, UPDATE or DELETE statements are allowed"));
+                        bad.add(new QueriesConfig.StatementOutcome(sql, false, "Only INSERT, UPDATE, DELETE or SELECT statements are allowed"));
                         log.error("Disallowed statement in group '{}': {}", g.getName(), trimSql(sql));
                     }
                 }
@@ -318,7 +318,7 @@ public class DmlExecutorService {
                     }
                     if (badBatch) {
                         anyOffending = true;
-                        tx.add(new QueriesConfig.BatchResult(b + 1, false, "Only INSERT, UPDATE or DELETE statements are allowed (batch contains disallowed statement)"));
+                        tx.add(new QueriesConfig.BatchResult(b + 1, false, "Only INSERT, UPDATE, DELETE or SELECT statements are allowed (batch contains disallowed statement)"));
                     }
                 }
             }
@@ -329,7 +329,7 @@ public class DmlExecutorService {
                     if (sql == null || sql.isBlank()) continue;
                     if (!isAllowedDml(sql)) {
                         anyOffending = true;
-                        nonTx.add(new QueriesConfig.StatementResult(i + 1, false, "Only INSERT, UPDATE or DELETE statements are allowed"));
+                        nonTx.add(new QueriesConfig.StatementResult(i + 1, false, "Only INSERT, UPDATE, DELETE or SELECT statements are allowed"));
                         log.error("Disallowed statement (non-tx #{}): {}", i + 1, trimSql(sql));
                     }
                 }
@@ -365,7 +365,7 @@ public class DmlExecutorService {
         while (lower.startsWith("(")) {
             lower = lower.substring(1).trim();
         }
-        return lower.startsWith("insert") || lower.startsWith("update") || lower.startsWith("delete");
+        return lower.startsWith("insert") || lower.startsWith("update") || lower.startsWith("delete") || lower.startsWith("select");
     }
 
     private void executeByGroups(QueriesConfig cfg) {
@@ -398,11 +398,22 @@ public class DmlExecutorService {
                                 String sql = stmts.get(i);
                                 if (sql == null || sql.isBlank()) continue;
                                 try {
-                                    int updated = jdbcTemplate.update(sql);
-                                    log.info("[group:{} tx stmt #{}] OK (updated={}): {}", g.getName(), i + 1, updated, trimSql(sql));
-                                    QueriesConfig.StatementOutcome so = new QueriesConfig.StatementOutcome(sql, true, null);
-                                    so.setRowsUpdated(updated);
-                                    outcomes.add(so);
+                                    String norm = trimLeadingKeyword(sql);
+                                    boolean isSelect = norm != null && norm.toLowerCase().startsWith("select");
+                                    if (isSelect) {
+                                        final int[] countHolder = new int[] { 0 };
+                                        jdbcTemplate.query(sql, rs -> { countHolder[0]++; });
+                                        log.info("[group:{} tx stmt #{}] OK (returned={}): {}", g.getName(), i + 1, countHolder[0], trimSql(sql));
+                                        QueriesConfig.StatementOutcome so = new QueriesConfig.StatementOutcome(sql, true, null);
+                                        so.setRowsReturned(countHolder[0]);
+                                        outcomes.add(so);
+                                    } else {
+                                        int updated = jdbcTemplate.update(sql);
+                                        log.info("[group:{} tx stmt #{}] OK (updated={}): {}", g.getName(), i + 1, updated, trimSql(sql));
+                                        QueriesConfig.StatementOutcome so = new QueriesConfig.StatementOutcome(sql, true, null);
+                                        so.setRowsUpdated(updated);
+                                        outcomes.add(so);
+                                    }
                                 } catch (Exception e) {
                                     log.error("[group:{} tx stmt #{}] FAILED: {} -> {}", g.getName(), i + 1, trimSql(sql), e.getMessage(), e);
                                     outcomes.add(new QueriesConfig.StatementOutcome(sql, false, e.getMessage()));
@@ -428,6 +439,7 @@ public class DmlExecutorService {
                             o.setSuccess(false);
                             o.setError(rolledBackMsg);
                             o.setRowsUpdated(null);
+                            o.setRowsReturned(null);
                         }
                     }
                     // Mark remaining statements (not attempted) as failed due to rollback
@@ -452,19 +464,32 @@ public class DmlExecutorService {
                     final int idx = nonTxStmtCounter;
                     try {
                         final int[] updatedHolder = new int[] { 0 };
+                        final int[] returnedHolder = new int[] { 0 };
                         jdbcTemplate.execute((ConnectionCallback<Void>) con -> {
                             boolean originalAutoCommit = con.getAutoCommit();
                             try {
                                 if (!originalAutoCommit) con.setAutoCommit(true);
-                                updatedHolder[0] = jdbcTemplate.update(sql);
+                                String norm = trimLeadingKeyword(sql);
+                                boolean isSelect = norm != null && norm.toLowerCase().startsWith("select");
+                                if (isSelect) {
+                                    jdbcTemplate.query(sql, rs -> { returnedHolder[0]++; });
+                                } else {
+                                    updatedHolder[0] = jdbcTemplate.update(sql);
+                                }
                                 return null;
                             } finally {
                                 try { con.setAutoCommit(originalAutoCommit); } catch (SQLException ignored) {}
                             }
                         });
-                        log.info("[group:{} non-tx #{}] OK (updated={}): {}", g.getName(), i + 1, updatedHolder[0], trimSql(sql));
+                        String norm = trimLeadingKeyword(sql);
+                        boolean isSelect = norm != null && norm.toLowerCase().startsWith("select");
+                        if (isSelect) {
+                            log.info("[group:{} non-tx #{}] OK (returned={}): {}", g.getName(), i + 1, returnedHolder[0], trimSql(sql));
+                        } else {
+                            log.info("[group:{} non-tx #{}] OK (updated={}): {}", g.getName(), i + 1, updatedHolder[0], trimSql(sql));
+                        }
                         QueriesConfig.StatementOutcome so = new QueriesConfig.StatementOutcome(sql, true, null);
-                        so.setRowsUpdated(updatedHolder[0]);
+                        if (isSelect) so.setRowsReturned(returnedHolder[0]); else so.setRowsUpdated(updatedHolder[0]);
                         outcomes.add(so);
                         nonTxResults.add(new QueriesConfig.StatementResult(idx, true, null));
                     } catch (Exception e) {
@@ -505,7 +530,13 @@ public class DmlExecutorService {
                     try {
                         // Ensure each statement auto-commits individually
                         if (!originalAutoCommit) con.setAutoCommit(true);
-                        jdbcTemplate.update(sql);
+                        String norm = trimLeadingKeyword(sql);
+                        boolean isSelect = norm != null && norm.toLowerCase().startsWith("select");
+                        if (isSelect) {
+                            jdbcTemplate.query(sql, rs -> { /* count-only via size in log below */ });
+                        } else {
+                            jdbcTemplate.update(sql);
+                        }
                         return null;
                     } finally {
                         try {
@@ -546,8 +577,16 @@ public class DmlExecutorService {
                         for (int i = 0; i < statements.size(); i++) {
                             String sql = statements.get(i);
                             if (sql == null || sql.isBlank()) continue;
-                            int updated = jdbcTemplate.update(sql);
-                            log.info("[tx batch #{} stmt #{}] OK (updated={}): {}", batchNo, i + 1, updated, trimSql(sql));
+                            String norm = trimLeadingKeyword(sql);
+                            boolean isSelect = norm != null && norm.toLowerCase().startsWith("select");
+                            if (isSelect) {
+                                final int[] countHolder = new int[] { 0 };
+                                jdbcTemplate.query(sql, rs -> { countHolder[0]++; });
+                                log.info("[tx batch #{} stmt #{}] OK (returned={}): {}", batchNo, i + 1, countHolder[0], trimSql(sql));
+                            } else {
+                                int updated = jdbcTemplate.update(sql);
+                                log.info("[tx batch #{} stmt #{}] OK (updated={}): {}", batchNo, i + 1, updated, trimSql(sql));
+                            }
                         }
                     }
                 });
@@ -566,5 +605,26 @@ public class DmlExecutorService {
     private String trimSql(String sql) {
         String s = sql.trim().replaceAll("\n+", " ");
         return s.length() > 200 ? s.substring(0, 200) + "..." : s;
+    }
+
+    // Helper: normalize by removing leading comments and parentheses, return trimmed SQL
+    private String trimLeadingKeyword(String sql) {
+        if (sql == null) return null;
+        String s = sql.replace('\r', '\n').trim();
+        boolean stripped = true;
+        int guard = 0;
+        while (stripped && guard++ < 5) {
+            stripped = false;
+            if (s.startsWith("--")) {
+                int nl = s.indexOf('\n');
+                if (nl >= 0) { s = s.substring(nl + 1).trim(); stripped = true; continue; }
+            }
+            if (s.startsWith("/*")) {
+                int end = s.indexOf("*/");
+                if (end >= 0) { s = s.substring(end + 2).trim(); stripped = true; continue; }
+            }
+            while (s.startsWith("(")) { s = s.substring(1).trim(); stripped = true; }
+        }
+        return s;
     }
 }

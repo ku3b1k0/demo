@@ -7,12 +7,12 @@ queries:
   - name: schema_setup
     type: non-transactional
     queries:
-      - "UPDATE hr.countries set COUNTRY_ID='AX' where 1=0"
+      - "INSERT INTO public.country (country) VALUES ('Vietnam'), ('Thailand')"
 
   - name: seed_data
     type: transactional
     queries:
-      - "SELECT * FROM hr.countries"
+      - "SELECT * FROM public.country"
 
   - name: maintenance
     type: non-transactional

@@ -195,6 +195,17 @@ public class DMLExecutorApplication {
     private String buildPlainSummary(QueriesConfig cfg) {
         StringBuilder sb = new StringBuilder();
         sb.append("<div class='dml-summary'>");
+        // Header with metadata and execution time
+        try {
+            QueriesConfig.Metadata md = (cfg != null) ? cfg.getMetadata() : null;
+            String author = firstNonBlank(md != null ? md.getAuthor() : null, "-");
+            String createdOn = firstNonBlank(md != null ? md.getCreatedOn() : null, "-");
+            String executedOn = java.time.LocalDateTime.now().toString();
+            sb.append("<h3><b>Author:</b> ").append(htmlEscape(author))
+              .append(" &nbsp; <b>Created On:</b> ").append(htmlEscape(createdOn))
+              .append(" &nbsp; <b>Executed On:</b> ").append(htmlEscape(executedOn))
+              .append("</h3>");
+        } catch (Exception ignored) {}
         if (cfg != null && cfg.getResults() != null) {
             // Prefer group-wise summary if available
             List<QueriesConfig.GroupResult> groups = cfg.getResults().getNamed();
@@ -209,13 +220,16 @@ public class DMLExecutorApplication {
                   .append("<th>Success</th>")
                   .append("<th>Failed</th>")
                   .append("<th>Rows Updated</th>")
+                  .append("<th>Rows Returned</th>")
                   .append("</tr></thead><tbody>");
                 for (QueriesConfig.GroupResult g : groups) {
                     int rowsUpdatedTotal = 0;
+                    int rowsReturnedTotal = 0;
                     if (g.getOutcomes() != null) {
                         for (QueriesConfig.StatementOutcome o : g.getOutcomes()) {
-                            if (o != null && o.isSuccess() && o.getRowsUpdated() != null) {
-                                rowsUpdatedTotal += o.getRowsUpdated();
+                            if (o != null && o.isSuccess()) {
+                                if (o.getRowsUpdated() != null) rowsUpdatedTotal += o.getRowsUpdated();
+                                if (o.getRowsReturned() != null) rowsReturnedTotal += o.getRowsReturned();
                             }
                         }
                     }
@@ -226,18 +240,20 @@ public class DMLExecutorApplication {
                       .append("<td>").append(g.getSuccessCount()).append("</td>")
                       .append("<td>").append(g.getFailureCount()).append("</td>")
                       .append("<td>").append(rowsUpdatedTotal).append("</td>")
+                      .append("<td>").append(rowsReturnedTotal).append("</td>")
                       .append("</tr>");
                 }
                 sb.append("</tbody></table>");
 
                 // Detailed statements table
-                sb.append("<h4>Statements</h4>");
+                sb.append("<h3>Statements</h3>");
                 sb.append("<table border='1' cellspacing='0' cellpadding='4'>");
                 sb.append("<thead><tr>")
                   .append("<th>Group</th>")
                   .append("<th>#</th>")
                   .append("<th>Status</th>")
                   .append("<th>Rows Updated</th>")
+                  .append("<th>Rows Returned</th>")
                   .append("<th>SQL</th>")
                   .append("<th>Error</th>")
                   .append("</tr></thead><tbody>");
@@ -254,6 +270,7 @@ public class DMLExecutorApplication {
                           .append(ok ? "<span style='color:green'>OK</span>" : "<span style='color:red'>FAILED</span>")
                           .append("</td>")
                           .append("<td>").append(ok ? String.valueOf(o.getRowsUpdated() != null ? o.getRowsUpdated() : 0) : "-").append("</td>")
+                          .append("<td>").append(ok ? String.valueOf(o.getRowsReturned() != null ? o.getRowsReturned() : 0) : "-").append("</td>")
                           .append("<td>").append(htmlEscape(trimSqlSafe(o != null ? o.getSql() : ""))).append("</td>")
                           .append("<td>").append(!ok ? htmlEscape(o != null && o.getError() != null ? o.getError() : "") : "").append("</td>")
                           .append("</tr>");

@@ -10,6 +10,8 @@ import java.util.List;
 public class QueriesConfig {
     private Queries queries = new Queries();
     private Results results = new Results();
+    // Optional metadata from YAML
+    private Metadata metadata = new Metadata();
 
     public Queries getQueries() {
         return queries;
@@ -25,6 +27,14 @@ public class QueriesConfig {
 
     public void setResults(Results results) {
         this.results = results != null ? results : new Results();
+    }
+
+    public Metadata getMetadata() {
+        return metadata;
+    }
+
+    public void setMetadata(Metadata metadata) {
+        this.metadata = metadata != null ? metadata : new Metadata();
     }
 
     public static class Queries {
@@ -215,6 +225,7 @@ public class QueriesConfig {
         private boolean success;
         private String error;
         private Integer rowsUpdated; // nullable; set for DML successes
+        private Integer rowsReturned; // nullable; set for SELECT successes
 
         public StatementOutcome() {}
         public StatementOutcome(String sql, boolean success, String error) {
@@ -236,5 +247,18 @@ public class QueriesConfig {
         public void setError(String error) { this.error = error; }
         public Integer getRowsUpdated() { return rowsUpdated; }
         public void setRowsUpdated(Integer rowsUpdated) { this.rowsUpdated = rowsUpdated; }
+        public Integer getRowsReturned() { return rowsReturned; }
+        public void setRowsReturned(Integer rowsReturned) { this.rowsReturned = rowsReturned; }
+    }
+
+    // Optional top-level metadata from YAML
+    public static class Metadata {
+        private String author;
+        private String createdOn;
+
+        public String getAuthor() { return author; }
+        public void setAuthor(String author) { this.author = author; }
+        public String getCreatedOn() { return createdOn; }
+        public void setCreatedOn(String createdOn) { this.createdOn = createdOn; }
     }
 }
